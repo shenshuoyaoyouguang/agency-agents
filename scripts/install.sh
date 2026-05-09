@@ -101,7 +101,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 INTEGRATIONS="$REPO_ROOT/integrations"
 
-ALL_TOOLS=(claude-code copilot antigravity gemini-cli opencode openclaw cursor aider windsurf qwen kimi)
+source "$SCRIPT_DIR/common.sh"
+
+ALL_TOOLS=(claude-code copilot antigravity gemini-cli opencode openclaw cursor trae aider windsurf qwen kimi mcp-server)
 
 # Standard agent category directories (keep sorted, sync with convert.sh / lint-agents.sh)
 AGENT_DIRS=(
@@ -149,6 +151,14 @@ detect_openclaw()     { command -v openclaw >/dev/null 2>&1 || [[ -d "${HOME}/.o
 detect_windsurf()     { command -v windsurf >/dev/null 2>&1 || [[ -d "${HOME}/.codeium" ]]; }
 detect_qwen()         { command -v qwen >/dev/null 2>&1 || [[ -d "${HOME}/.qwen" ]]; }
 detect_kimi()         { command -v kimi >/dev/null 2>&1; }
+detect_mcp_server() {
+  command -v node >/dev/null 2>&1 || return 1
+  local ver
+  ver="$(node -v 2>/dev/null)"
+  ver="${ver#v}"
+  local major="${ver%%.*}"
+  [[ "$major" -ge 18 ]]
+}
 
 is_detected() {
   case "$1" in
@@ -163,6 +173,7 @@ is_detected() {
     windsurf)    detect_windsurf    ;;
     qwen)        detect_qwen        ;;
     kimi)        detect_kimi        ;;
+    mcp-server)  detect_mcp_server  ;;
     *)           return 1 ;;
   esac
 }
@@ -181,6 +192,7 @@ tool_label() {
     windsurf)    printf "%-14s  %s" "Windsurf"     "(.windsurfrules)"        ;;
     qwen)        printf "%-14s  %s" "Qwen Code"    "(~/.qwen/agents)"        ;;
     kimi)        printf "%-14s  %s" "Kimi Code"    "(~/.config/kimi/agents)" ;;
+    mcp-server)  printf "%-14s  %s" "MCP Server"  "(Node.js MCP Server)"      ;;
   esac
 }
 
@@ -518,6 +530,116 @@ install_kimi() {
   ok "Usage: kimi --agent-file ~/.config/kimi/agents/<agent-name>/agent.yaml"
 }
 
+install_mcp_server() {
+  local mcp_dir="$REPO_ROOT/mcp-server"
+  local dist="$mcp_dir/dist/index.js"
+
+  if ! detect_mcp_server; then
+    err "MCP Server requires Node.js 18+."
+    return 1
+  fi
+
+  if [[ ! -d "$mcp_dir/node_modules" ]]; then
+    warn "MCP Server dependencies missing. Installing with npm ci..."
+    (cd "$mcp_dir" && npm ci) || {
+      err "Failed to install mcp-server dependencies with npm ci."
+      return 1
+    }
+    ok "MCP Server dependencies installed."
+  fi
+
+  if [[ ! -f "$dist" ]]; then
+    warn "MCP Server not built. Building now..."
+    (cd "$mcp_dir" && npm run build) || {
+      err "Failed to build mcp-server after installing dependencies."
+      return 1
+    }
+    ok "MCP Server built successfully."
+  fi
+
+  local cmd="node"
+  local args
+  args="$(normalize_node_entry_path "$dist")"
+  
+  # Trae IDE
+  local trae_mcp="$REPO_ROOT/.trae/mcp.json"
+  if [[ -f "$trae_mcp" ]]; then
+    warn "Trae: .trae/mcp.json already exists. Skipping to avoid overwrite."
+    dim  "     Add this entry manually:"
+    dim  "     {\"mcpServers\":{\"agency\":{\"command\":\"$cmd\",\"args\":[\"$args\"]}}}"
+  else
+    mkdir -p "$(dirname "$trae_mcp")"
+    cat > "$trae_mcp" <<HEREDOC
+{
+  "mcpServers": {
+    "agency": {
+      "command": "$cmd",
+      "args": ["$args"]
+    }
+  }
+}
+HEREDOC
+    ok "Trae: mcpServers config -> $trae_mcp"
+  fi
+
+  # Cursor IDE
+  local cursor_mcp="$REPO_ROOT/.cursor/mcp.json"
+  if [[ -f "$cursor_mcp" ]]; then
+    warn "Cursor: .cursor/mcp.json already exists. Skipping to avoid overwrite."
+  else
+    mkdir -p "$(dirname "$cursor_mcp")"
+    cat > "$cursor_mcp" <<HEREDOC
+{
+  "mcpServers": {
+    "agency": {
+      "command": "$cmd",
+      "args": ["$args"]
+    }
+  }
+}
+HEREDOC
+    ok "Cursor: mcpServers config -> $cursor_mcp"
+  fi
+
+  # Claude Desktop
+  local claude_config=""
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    claude_config="${HOME}/Library/Application Support/Claude/claude_desktop_config.json"
+  elif [[ -n "$APPDATA" ]]; then
+    claude_config="$(cygpath -u "$APPDATA" 2>/dev/null || echo "$APPDATA")/Claude/claude_desktop_config.json"
+  else
+    claude_config="${HOME}/.config/Claude/claude_desktop_config.json"
+  fi
+  if [[ -n "$claude_config" ]]; then
+    local claude_dir
+    claude_dir="$(dirname "$claude_config")"
+    if [[ -d "$claude_dir" ]]; then
+      if [[ -f "$claude_config" ]]; then
+        warn "Claude Desktop: config already exists. Skipping to avoid overwrite."
+        dim  "     Add this to your claude_desktop_config.json mcpServers section:"
+        dim  "     \"agency\": {\"command\": \"$cmd\", \"args\": [\"$args\"]}"
+      else
+        cat > "$claude_config" <<HEREDOC
+{
+  "mcpServers": {
+    "agency": {
+      "command": "$cmd",
+      "args": ["$args"]
+    }
+  }
+}
+HEREDOC
+        ok "Claude Desktop: mcpServers config -> $claude_config"
+      fi
+    else
+      warn "Claude Desktop: config directory not found at $claude_dir"
+      dim  "     Is Claude Desktop installed? Create the directory and re-run,"
+      dim  "     or add manually to your claude_desktop_config.json:"
+      dim  "     \"agency\": {\"command\": \"$cmd\", \"args\": [\"$args\"]}"
+    fi
+  fi
+}
+
 install_tool() {
   case "$1" in
     claude-code) install_claude_code ;;
@@ -531,6 +653,7 @@ install_tool() {
     windsurf)    install_windsurf    ;;
     qwen)        install_qwen        ;;
     kimi)        install_kimi        ;;
+    mcp-server)    install_mcp_server  ;;
   esac
 }
 

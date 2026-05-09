@@ -19,6 +19,7 @@
 #   openclaw     — OpenClaw workspaces (integrations/openclaw/<agent>/SOUL.md)
 #   qwen         — Qwen Code SubAgent files (~/.qwen/agents/*.md)
 #   kimi         — Kimi Code CLI agent files (~/.config/kimi/agents/)
+#   mcp-server   — MCP server config files (Trae/Cursor/Claude IDE configs)
 #   all          — All tools (default)
 #
 # Output is written to integrations/<tool>/ relative to the repo root.
@@ -60,6 +61,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 OUT_DIR="$REPO_ROOT/integrations"
 TODAY="$(date +%Y-%m-%d)"
+
+source "$SCRIPT_DIR/common.sh"
 
 AGENT_DIRS=(
   academic design engineering finance game-development marketing paid-media product project-management
@@ -480,9 +483,43 @@ HEREDOC
 
 # --- Main loop ---
 
+convert_mcp_server() {
+  local repo_root="$REPO_ROOT"
+  local outdir="$OUT_DIR/mcp-server"
+  mkdir -p "$outdir"
+
+  local entry_point
+  entry_point="$(normalize_node_entry_path "${repo_root}/mcp-server/dist/index.js")"
+
+  _write_mcp_config() {
+    local target="$1"
+    cat > "$target" <<HEREDOC
+{
+  "mcpServers": {
+    "agency": {
+      "command": "node",
+      "args": ["${entry_point}"]
+    }
+  }
+}
+HEREDOC
+  }
+
+  local configs=("trae" "cursor" "claude")
+  for config in "${configs[@]}"; do
+    _write_mcp_config "$outdir/${config}-mcp-config.json"
+  done
+}
+
 run_conversions() {
   local tool="$1"
   local count=0
+
+  if [[ "$tool" == "mcp-server" ]]; then
+    convert_mcp_server
+    echo "1"
+    return
+  fi
 
   for dir in "${AGENT_DIRS[@]}"; do
     local dirpath="$REPO_ROOT/$dir"
@@ -536,7 +573,7 @@ main() {
     esac
   done
 
-  local valid_tools=("antigravity" "gemini-cli" "opencode" "cursor" "aider" "windsurf" "openclaw" "qwen" "kimi" "all")
+  local valid_tools=("antigravity" "gemini-cli" "opencode" "cursor" "trae" "aider" "windsurf" "openclaw" "qwen" "kimi" "mcp-server" "all")
   local valid=false
   for t in "${valid_tools[@]}"; do [[ "$t" == "$tool" ]] && valid=true && break; done
   if ! $valid; then
@@ -555,7 +592,7 @@ main() {
 
   local tools_to_run=()
   if [[ "$tool" == "all" ]]; then
-    tools_to_run=("antigravity" "gemini-cli" "opencode" "cursor" "aider" "windsurf" "openclaw" "qwen" "kimi")
+    tools_to_run=("antigravity" "gemini-cli" "opencode" "cursor" "trae" "aider" "windsurf" "openclaw" "qwen" "kimi" "mcp-server")
   else
     tools_to_run=("$tool")
   fi
@@ -566,7 +603,7 @@ main() {
 
   if $use_parallel && [[ "$tool" == "all" ]]; then
     # Tools that write to separate dirs can run in parallel; buffer output so each tool's output stays together
-    local parallel_tools=(antigravity gemini-cli opencode cursor openclaw qwen)
+    local parallel_tools=(antigravity gemini-cli opencode cursor trae openclaw qwen mcp-server)
     local parallel_out_dir
     parallel_out_dir="$(mktemp -d)"
     info "Converting: ${#parallel_tools[@]}/${n_tools} tools in parallel (output buffered per tool)..."
